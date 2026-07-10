@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Chest X-Ray Pneumonia Detection — Configuration
+#  Dataset: Kaggle Chest X-Ray Images (Pneumonia)
+#  https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Data
+data:
+  root_dir: data/raw          # Place Kaggle dataset here (train/ val/ test/ subfolders)
+  image_size: 224
+  num_workers: 0              # 0 = use main process (required on Windows)
+
+# Model
+model:
+  name: densenet121           # densenet121 | resnet50
+  pretrained: true            # Use ImageNet weights as starting point
+  dropout: 0.5
+
+# Training
+training:
+  epochs: 20
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  scheduler: cosine           # cosine | step | plateau
+  patience: 5                 # Early stopping patience (epochs without improvement)
+  use_class_weights: true     # Handle the 3:1 Pneumonia:Normal imbalance
+
+# Outputs
+output:
+  model_dir: outputs/models
+  log_dir: outputs/logs
+  viz_dir: outputs/visualizations
+  reports_dir: outputs/reports
+  best_model_name: best_model.pth
+
+# Evaluation
+evaluation:
+  threshold: 0.5
