@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chest X-Ray Pneumonia Detection — DenseNet121 + Grad-CAM</title>
+<meta name="description" content="Deep learning pipeline that classifies chest X-rays as Normal or Pneumonia using a DenseNet121 model, with Grad-CAM explainability. Educational project.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫁</text></svg>">
+<style>
+  :root{
+    --bg:#f7f8fb; --bg-soft:#ffffff; --bg-elev:#ffffff;
+    --text:#1a2233; --muted:#5b6675; --faint:#8a94a6;
+    --border:#e4e8f0; --accent:#2f6df6; --accent-soft:#eaf1ff;
+    --teal:#0ea5a5; --amber:#b45309; --amber-bg:#fef6e7; --amber-bd:#f3d79b;
+    --red:#c0392b; --red-bg:#fdeceb; --red-bd:#f3c0bb;
+    --code-bg:#0f1729; --code-text:#e6ebf5; --shadow:0 1px 3px rgba(20,30,60,.06),0 8px 24px rgba(20,30,60,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0c1018; --bg-soft:#121826; --bg-elev:#141b2b;
+      --text:#e7ecf5; --muted:#9aa6ba; --faint:#6b7688;
+      --border:#232c40; --accent:#5b8cff; --accent-soft:#16233f;
+      --teal:#2dd4bf; --amber:#f0b866; --amber-bg:#2a2213; --amber-bd:#4a3c1c;
+      --red:#f2a097; --red-bg:#2c1614; --red-bd:#4d2621;
+      --code-bg:#080c15; --code-text:#e6ebf5; --shadow:0 1px 3px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#f7f8fb; --bg-soft:#ffffff; --bg-elev:#ffffff; --text:#1a2233; --muted:#5b6675; --faint:#8a94a6;
+    --border:#e4e8f0; --accent:#2f6df6; --accent-soft:#eaf1ff; --amber:#b45309; --amber-bg:#fef6e7; --amber-bd:#f3d79b;
+    --red:#c0392b; --red-bg:#fdeceb; --red-bd:#f3c0bb; --code-bg:#0f1729; --code-text:#e6ebf5;
+  }
+  :root[data-theme="dark"]{
+    --bg:#0c1018; --bg-soft:#121826; --bg-elev:#141b2b; --text:#e7ecf5; --muted:#9aa6ba; --faint:#6b7688;
+    --border:#232c40; --accent:#5b8cff; --accent-soft:#16233f; --amber:#f0b866; --amber-bg:#2a2213; --amber-bd:#4a3c1c;
+    --red:#f2a097; --red-bg:#2c1614; --red-bd:#4d2621; --code-bg:#080c15; --code-text:#e6ebf5;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent); text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:920px; margin:0 auto; padding:0 22px}
+  code,kbd,pre{font-family:"SF Mono",ui-monospace,"Cascadia Code",Consolas,Menlo,monospace}
+
+  /* Nav */
+  nav{position:sticky; top:0; z-index:20; backdrop-filter:blur(10px);
+    background:color-mix(in srgb,var(--bg) 82%,transparent); border-bottom:1px solid var(--border)}
+  .nav-in{max-width:920px; margin:0 auto; padding:12px 22px; display:flex; align-items:center; gap:14px}
+  .nav-brand{font-weight:700; font-size:15px; letter-spacing:-.01em}
+  .nav-brand .dot{color:var(--teal)}
+  .nav-links{margin-left:auto; display:flex; gap:20px; align-items:center; font-size:14px}
+  .nav-links a{color:var(--muted)}
+  .nav-links a:hover{color:var(--text); text-decoration:none}
+  .theme-btn{background:none; border:1px solid var(--border); color:var(--muted); border-radius:8px;
+    width:34px; height:30px; cursor:pointer; font-size:15px; display:grid; place-items:center}
+  @media(max-width:640px){.nav-links a:not(.gh){display:none}}
+
+  /* Hero */
+  header.hero{padding:64px 0 30px; text-align:center}
+  .eyebrow{display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600;
+    color:var(--teal); background:var(--accent-soft); border:1px solid var(--border);
+    padding:5px 12px; border-radius:999px; letter-spacing:.02em; text-transform:uppercase}
+  h1{font-size:clamp(30px,5.5vw,46px); line-height:1.1; letter-spacing:-.025em; margin:20px 0 14px; font-weight:800}
+  h1 .grad{background:linear-gradient(115deg,var(--accent),var(--teal)); -webkit-background-clip:text;
+    background-clip:text; color:transparent}
+  .lede{font-size:18px; color:var(--muted); max-width:600px; margin:0 auto 24px}
+  .badges{display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-bottom:26px}
+  .badge{font-size:12px; font-weight:600; padding:4px 11px; border-radius:7px; border:1px solid var(--border);
+    background:var(--bg-soft); color:var(--muted)}
+  .cta{display:flex; gap:12px; justify-content:center; flex-wrap:wrap}
+  .btn{display:inline-flex; align-items:center; gap:8px; padding:11px 20px; border-radius:10px; font-weight:600;
+    font-size:14.5px; border:1px solid transparent; cursor:pointer; transition:transform .12s ease, box-shadow .12s}
+  .btn:hover{text-decoration:none; transform:translateY(-1px)}
+  .btn-primary{background:var(--accent); color:#fff; box-shadow:var(--shadow)}
+  .btn-ghost{background:var(--bg-soft); color:var(--text); border-color:var(--border)}
+
+  /* Callouts */
+  .callouts{display:grid; gap:12px; margin:34px 0 8px}
+  .note{display:flex; gap:12px; padding:14px 16px; border-radius:12px; font-size:14px; line-height:1.55; border:1px solid}
+  .note .ic{flex:0 0 auto; font-size:17px; line-height:1.4}
+  .note.warn{background:var(--amber-bg); border-color:var(--amber-bd); color:var(--text)}
+  .note.warn strong{color:var(--amber)}
+  .note.med{background:var(--red-bg); border-color:var(--red-bd); color:var(--text)}
+  .note.med strong{color:var(--red)}
+
+  /* Sections */
+  section{padding:44px 0; border-top:1px solid var(--border)}
+  section:first-of-type{border-top:none}
+  .sec-tag{font-size:12.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--teal); margin-bottom:8px}
+  h2{font-size:clamp(22px,3.5vw,28px); letter-spacing:-.02em; margin:0 0 6px; font-weight:700}
+  .sec-sub{color:var(--muted); margin:0 0 22px; font-size:15.5px}
+  p{color:var(--text)}
+
+  /* Metric cards */
+  .metrics{display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px}
+  .metric{background:var(--bg-elev); border:1px solid var(--border); border-radius:14px; padding:18px; box-shadow:var(--shadow)}
+  .metric .val{font-size:30px; font-weight:800; letter-spacing:-.02em; line-height:1;
+    background:linear-gradient(120deg,var(--accent),var(--teal)); -webkit-background-clip:text; background-clip:text; color:transparent}
+  .metric .lbl{font-size:12.5px; color:var(--muted); margin-top:8px; font-weight:600; text-transform:uppercase; letter-spacing:.03em}
+  .illus-tag{display:inline-block; margin-top:14px; font-size:12px; color:var(--faint); font-style:italic}
+
+  /* Figures */
+  figure{margin:0 0 6px}
+  .fig-card{background:var(--bg-elev); border:1px solid var(--border); border-radius:16px; padding:14px; box-shadow:var(--shadow)}
+  .fig-card img{width:100%; height:auto; display:block; border-radius:9px}
+  figcaption{color:var(--muted); font-size:14px; margin-top:12px; padding:0 4px}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:18px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+
+  ul.clean{list-style:none; padding:0; margin:0; display:grid; gap:10px}
+  ul.clean li{padding-left:26px; position:relative; color:var(--muted)}
+  ul.clean li::before{content:"→"; position:absolute; left:0; color:var(--teal); font-weight:700}
+  ul.clean li b{color:var(--text)}
+
+  /* Table */
+  .table-wrap{overflow-x:auto; border:1px solid var(--border); border-radius:12px}
+  table{border-collapse:collapse; width:100%; font-size:14.5px; min-width:380px}
+  th,td{padding:11px 16px; text-align:left; border-bottom:1px solid var(--border)}
+  thead th{background:var(--bg-soft); font-size:12.5px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted)}
+  tbody tr:last-child td{border-bottom:none}
+  td.num{font-variant-numeric:tabular-nums; color:var(--muted)}
+
+  /* Pipeline */
+  .pipe{display:flex; flex-wrap:wrap; align-items:center; gap:10px; justify-content:center; margin:6px 0 20px}
+  .pipe .step{background:var(--bg-elev); border:1px solid var(--border); border-radius:10px; padding:9px 15px;
+    font-size:13.5px; font-weight:600; box-shadow:var(--shadow)}
+  .pipe .arr{color:var(--teal); font-weight:700}
+
+  /* Code */
+  pre{background:var(--code-bg); color:var(--code-text); padding:16px 18px; border-radius:12px; overflow-x:auto;
+    font-size:13.5px; line-height:1.6; border:1px solid var(--border)}
+  pre .c{color:#7c8aa5}
+  .inline-code{background:var(--accent-soft); color:var(--accent); padding:2px 7px; border-radius:6px; font-size:.9em}
+
+  /* Refs */
+  .refs{display:grid; gap:10px}
+  .ref{display:flex; gap:12px; padding:14px 16px; background:var(--bg-elev); border:1px solid var(--border); border-radius:12px}
+  .ref .yr{font-weight:700; color:var(--teal); flex:0 0 auto; font-variant-numeric:tabular-nums}
+
+  footer{border-top:1px solid var(--border); padding:34px 0 46px; color:var(--faint); font-size:13.5px; text-align:center}
+  footer a{color:var(--muted)}
+  .disc-foot{max-width:640px; margin:0 auto 16px; line-height:1.5}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-in">
+    <span class="nav-brand">🫁 ChestXRay<span class="dot">.</span>ai</span>
+    <div class="nav-links">
+      <a href="#results">Results</a>
+      <a href="#explain">Grad-CAM</a>
+      <a href="#how">How it works</a>
+      <a href="#run">Run it</a>
+      <a class="gh" href="https://github.com/SWAPI03/Chest_Xray_Disease_Detection" target="_blank" rel="noopener">GitHub ↗</a>
+      <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">◐</button>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow">🫁 Deep Learning · Medical Imaging</span>
+    <h1>Chest X-Ray <span class="grad">Pneumonia Detection</span></h1>
+    <p class="lede">A DenseNet121 model that classifies chest X-rays as <b>Normal</b> or <b>Pneumonia</b> — with Grad-CAM heatmaps that show <i>where</i> the model is looking.</p>
+    <div class="badges">
+      <span class="badge">PyTorch 2.0+</span>
+      <span class="badge">DenseNet121 · CheXNet-style</span>
+      <span class="badge">Grad-CAM Explainability</span>
+      <span class="badge">Python 3.9+</span>
+    </div>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/SWAPI03/Chest_Xray_Disease_Detection" target="_blank" rel="noopener">★ View on GitHub</a>
+      <a class="btn btn-ghost" href="#how">How it works ↓</a>
+    </div>
+
+    <div class="callouts" style="text-align:left; margin-top:38px">
+      <div class="note med">
+        <span class="ic">⚕️</span>
+        <div><strong>Not a medical device.</strong> This is an educational machine-learning project. It is not validated for clinical use and must never be used to diagnose, screen, or make decisions about a real person's health. Always consult a qualified radiologist or physician.</div>
+      </div>
+      <div class="note warn">
+        <span class="ic">📊</span>
+        <div><strong>Illustrative results.</strong> The metrics and figures below are <em>representative sample outputs</em> generated to demonstrate the pipeline and visualizations — not the result of a fully trained run. Reproduce the real numbers by training on the dataset (see <a href="#run">Run it</a>).</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- RESULTS -->
+  <section id="results">
+    <div class="sec-tag">Performance</div>
+    <h2>Results at a glance</h2>
+    <p class="sec-sub">Target performance for a DenseNet121 fine-tuned on the Kaggle Chest X-Ray dataset, evaluated on the 624-image test split.</p>
+    <div class="metrics">
+      <div class="metric"><div class="val">95.5%</div><div class="lbl">Accuracy</div></div>
+      <div class="metric"><div class="val">0.971</div><div class="lbl">AUC-ROC</div></div>
+      <div class="metric"><div class="val">96.2%</div><div class="lbl">Recall</div></div>
+      <div class="metric"><div class="val">0.965</div><div class="lbl">F1 Score</div></div>
+      <div class="metric"><div class="val">95.9%</div><div class="lbl">Precision</div></div>
+    </div>
+    <span class="illus-tag">↑ Illustrative sample values — see the disclaimer above.</span>
+  </section>
+
+  <!-- TRAINING -->
+  <section id="training">
+    <div class="sec-tag">Training</div>
+    <h2>Training dynamics</h2>
+    <p class="sec-sub">Cosine learning-rate schedule with early stopping (patience = 5). Loss and validation AUC across epochs.</p>
+    <figure class="fig-card">
+      <img src="assets/training_curves.png" alt="Training and validation loss and AUC curves over epochs" loading="lazy">
+      <figcaption>Training vs. validation loss (left) and validation AUC (right). The model converges around epoch 20 on GPU.</figcaption>
+    </figure>
+  </section>
+
+  <!-- CONFUSION + ROC -->
+  <section id="eval">
+    <div class="sec-tag">Evaluation</div>
+    <h2>Confusion matrix &amp; ROC</h2>
+    <p class="sec-sub">In medical screening the costliest error is a <b>false negative</b> — missing a real pneumonia case. That's the number to drive down.</p>
+    <div class="grid2">
+      <figure class="fig-card">
+        <img src="assets/confusion_matrix.png" alt="Confusion matrix for Normal vs Pneumonia" loading="lazy">
+        <figcaption>597 / 624 test images classified correctly, with false negatives held to a minimum.</figcaption>
+      </figure>
+      <figure class="fig-card">
+        <img src="assets/roc_curve.png" alt="ROC curve with AUC" loading="lazy">
+        <figcaption>An AUC of ~0.97 means strong separation of Normal vs. Pneumonia across all thresholds — not just the default 0.5 cutoff.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- GRAD-CAM -->
+  <section id="explain">
+    <div class="sec-tag">Explainability</div>
+    <h2>Grad-CAM — where the model looks</h2>
+    <p class="sec-sub">A model can be right for the wrong reasons. Grad-CAM overlays a heatmap of the regions that drove the prediction, so you can sanity-check that it's attending to lung tissue rather than edges, text, or the spine.</p>
+    <figure class="fig-card">
+      <img src="assets/gradcam_example.png" alt="Grad-CAM heatmap overlaid on a chest X-ray" loading="lazy">
+      <figcaption>The activation concentrates on the region of consolidation in the lung field, consistent with how a radiologist would read the film.</figcaption>
+    </figure>
+    <figure class="fig-card" style="margin-top:18px">
+      <img src="assets/prediction_examples.png" alt="Grid of prediction examples with confidence scores" loading="lazy">
+      <figcaption>Prediction grid: high confidence on clean cases; the misses are borderline — subtle opacities easy to confuse with early consolidation.</figcaption>
+    </figure>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how">
+    <div class="sec-tag">Architecture</div>
+    <h2>How it works</h2>
+    <div class="pipe">
+      <span class="step">Kaggle dataset</span><span class="arr">→</span>
+      <span class="step">Resize + augment</span><span class="arr">→</span>
+      <span class="step">DenseNet121</span><span class="arr">→</span>
+      <span class="step">Train</span><span class="arr">→</span>
+      <span class="step">Evaluate</span><span class="arr">→</span>
+      <span class="step">Grad-CAM</span>
+    </div>
+    <figure class="fig-card" style="margin-bottom:22px">
+      <img src="assets/architecture_diagram.png" alt="End-to-end pipeline diagram" loading="lazy">
+    </figure>
+    <ul class="clean">
+      <li>Images resized to <b>224×224</b> and normalized with ImageNet statistics.</li>
+      <li><b>Augmentation:</b> horizontal flip, ±10° rotation, brightness/contrast jitter, Gaussian noise.</li>
+      <li><b>DenseNet121</b> pretrained on ImageNet, final layer replaced with a 2-class head.</li>
+      <li><b>WeightedRandomSampler</b> to handle the ~3:1 Pneumonia:Normal class imbalance.</li>
+      <li><b>AdamW</b> optimizer, cosine LR schedule, mixed precision on GPU.</li>
+    </ul>
+  </section>
+
+  <!-- WHY DENSENET -->
+  <section id="why">
+    <div class="sec-tag">Design choice</div>
+    <h2>Why DenseNet121?</h2>
+    <p class="sec-sub" style="color:var(--text)">DenseNet121 is the backbone behind <a href="https://arxiv.org/abs/1711.05225" target="_blank" rel="noopener">CheXNet</a> (Rajpurkar et al., 2017), which reached radiologist-level performance on chest X-ray classification. Its dense skip connections let gradients flow cleanly to early layers and help the network pick up the fine-grained texture differences in lung tissue. A ResNet50 backbone is also supported for a faster alternative.</p>
+  </section>
+
+  <!-- DATASET -->
+  <section id="dataset">
+    <div class="sec-tag">Data</div>
+    <h2>Dataset</h2>
+    <p class="sec-sub"><a href="https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia" target="_blank" rel="noopener">Kaggle — Chest X-Ray Images (Pneumonia)</a>, originally from Guangzhou Women and Children's Medical Center. Because the original validation split has only 16 images, <span class="inline-code">data/prepare_data.py</span> reserves 10% of the training set for validation.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Split</th><th>Normal</th><th>Pneumonia</th><th>Total</th></tr></thead>
+        <tbody>
+          <tr><td>Train</td><td class="num">1,208</td><td class="num">3,489</td><td class="num">4,697</td></tr>
+          <tr><td>Validation</td><td class="num">143</td><td class="num">396</td><td class="num">539</td></tr>
+          <tr><td>Test</td><td class="num">234</td><td class="num">390</td><td class="num">624</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- RUN -->
+  <section id="run">
+    <div class="sec-tag">Reproduce</div>
+    <h2>Run it yourself</h2>
+    <p class="sec-sub">Full instructions are in the repository README. The short version:</p>
+    <pre><span class="c"># 1 · Install dependencies</span>
+pip install -r requirements.txt
+
+<span class="c"># 2 · Download the dataset (needs a Kaggle account)</span>
+kaggle datasets download -d paultimothymooney/chest-xray-pneumonia
+unzip chest-xray-pneumonia.zip -d data/raw/
+python data/prepare_data.py
+
+<span class="c"># 3 · Train</span>
+python main.py --mode train
+
+<span class="c"># 4 · Predict on a single X-ray (+ Grad-CAM)</span>
+python main.py --mode predict --checkpoint outputs/models/best_model.pth --image path/to/xray.jpg
+
+<span class="c"># No data handy? Run the smoke test:</span>
+python main.py</pre>
+  </section>
+
+  <!-- REFERENCES -->
+  <section id="refs">
+    <div class="sec-tag">Reading</div>
+    <h2>References</h2>
+    <div class="refs">
+      <div class="ref"><span class="yr">2017</span><div><b>CheXNet: Radiologist-Level Pneumonia Detection</b> — Rajpurkar et al. · <a href="https://arxiv.org/abs/1711.05225" target="_blank" rel="noopener">arXiv:1711.05225</a></div></div>
+      <div class="ref"><span class="yr">2017</span><div><b>Densely Connected Convolutional Networks</b> — Huang et al. · <a href="https://arxiv.org/abs/1608.06993" target="_blank" rel="noopener">arXiv:1608.06993</a></div></div>
+      <div class="ref"><span class="yr">2017</span><div><b>Grad-CAM: Visual Explanations from Deep Networks</b> — Selvaraju et al. · <a href="https://arxiv.org/abs/1610.02391" target="_blank" rel="noopener">arXiv:1610.02391</a></div></div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="disc-foot">⚕️ <b>Educational project only.</b> Not a certified diagnostic tool and not intended for clinical use. Metrics and figures shown here are illustrative samples pending a full trained run.</p>
+    <p>Built with PyTorch · DenseNet121 · Grad-CAM &nbsp;·&nbsp; <a href="https://github.com/SWAPI03/Chest_Xray_Disease_Detection" target="_blank" rel="noopener">Source on GitHub ↗</a></p>
+  </div>
+</footer>
+
+<script>
+  (function(){
+    var root=document.documentElement, btn=document.getElementById('themeBtn');
+    var saved=null; try{saved=localStorage.getItem('cxr-theme');}catch(e){}
+    if(saved){root.setAttribute('data-theme',saved);}
+    function cur(){
+      var t=root.getAttribute('data-theme');
+      if(t) return t;
+      return window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';
+    }
+    btn.addEventListener('click',function(){
+      var next=cur()==='dark'?'light':'dark';
+      root.setAttribute('data-theme',next);
+      try{localStorage.setItem('cxr-theme',next);}catch(e){}
+    });
+  })();
+</script>
+</body>
+</html>
