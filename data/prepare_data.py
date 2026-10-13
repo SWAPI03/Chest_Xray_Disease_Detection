@@ -71,8 +71,8 @@ def fix_val_split(root: Path = RAW_DIR, val_ratio: float = 0.10, seed: int = 42)
         train_cls = root / "train" / cls
         val_cls.mkdir(parents=True, exist_ok=True)
 
-        images = [p for p in train_cls.glob("*.*")
-                  if p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
+        images = sorted(p for p in train_cls.glob("*.*")
+                        if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
         n_move = int(len(images) * val_ratio)
         to_move = np.random.choice(images, n_move, replace=False)
 
