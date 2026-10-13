@@ -6,13 +6,12 @@ from setuptools import setup, find_packages
 
 setup(
     name="chest_xray_detection",
-    version="1.0.0",
+    version="2.0.0",
     description="Image-Based Disease Detection from Chest X-Rays",
     packages=find_packages(include=["src", "src.*"]),
     python_requires=">=3.9",
     install_requires=[
-        "torch>=2.0.0",
-        "torchvision>=0.15.0",
+        "tensorflow>=2.16.0",
         "numpy>=1.24.0",
         "pandas>=2.0.0",
         "Pillow>=9.5.0",
@@ -21,7 +20,5 @@ setup(
         "seaborn>=0.12.0",
         "opencv-python>=4.8.0",
         "pyyaml>=6.0",
-        "tqdm>=4.65.0",
-        "albumentations>=1.3.0",
     ],
 )

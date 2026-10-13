@@ -1,14 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Chest X-Ray Pneumonia Detection — Configuration
+#  Chest X-Ray Pneumonia Detection: Configuration (TensorFlow / Keras)
 #  Dataset: Kaggle Chest X-Ray Images (Pneumonia)
 #  https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia
 # ─────────────────────────────────────────────────────────────────────────────
+
+seed: 42
 
 # Data
 data:
   root_dir: data/raw          # Place Kaggle dataset here (train/ val/ test/ subfolders)
   image_size: 224
-  num_workers: 0              # 0 = use main process (required on Windows)
 
 # Model
 model:
@@ -25,6 +26,7 @@ training:
   scheduler: cosine           # cosine | step | plateau
   patience: 5                 # Early stopping patience (epochs without improvement)
   use_class_weights: true     # Handle the 3:1 Pneumonia:Normal imbalance
+  mixed_precision: true       # float16 compute on GPU (ignored on CPU)
 
 # Outputs
 output:
@@ -32,7 +34,7 @@ output:
   log_dir: outputs/logs
   viz_dir: outputs/visualizations
   reports_dir: outputs/reports
-  best_model_name: best_model.pth
+  best_model_name: best_model.keras
 
 # Evaluation
 evaluation:

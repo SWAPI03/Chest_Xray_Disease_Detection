@@ -30,6 +30,8 @@ outputs/models/*.pth
 outputs/models/*.pt
 outputs/models/*.bin
 outputs/models/*.onnx
+outputs/models/*.keras
+outputs/models/*.h5
 
 # ── TensorBoard logs ──────────────────────────────────────────────────────────
 outputs/logs/
