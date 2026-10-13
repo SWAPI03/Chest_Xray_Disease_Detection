@@ -3,134 +3,161 @@ gradcam.py
 ----------
 Grad-CAM: highlights the chest X-ray regions that most influenced the prediction.
 
-Supports DenseNet121 (hooks on denseblock4) and ResNet50 (hooks on layer4).
+Keras version of the usual recipe: a second model returns both the last conv
+feature map and the prediction, tf.GradientTape gives the gradient of the class
+score with respect to that feature map, and the pooled gradients weight it.
 """
+
+from pathlib import Path
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from pathlib import Path
-from typing import Optional, Tuple
+import tensorflow as tf
+import keras
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from src.dataset import CLASSES, load_image
 
 
 class GradCAM:
-    def __init__(self, model: nn.Module, model_name: str = "densenet121"):
-        self.model      = model
-        self.model_name = model_name.lower()
-        self.gradients  = None
-        self.activations = None
-        self._hooks     = []
-        self._register_hooks()
-
-    def _target_layer(self) -> nn.Module:
-        if self.model_name == "densenet121":
-            return self.model.features.denseblock4
-        if self.model_name == "resnet50":
-            return list(self.model.backbone.children())[-2]
-        raise ValueError(f"Unsupported model: {self.model_name}")
-
-    def _register_hooks(self):
-        layer = self._target_layer()
-        self._hooks.append(layer.register_forward_hook(
-            lambda m, i, o: setattr(self, "activations", o.detach())
-        ))
-        self._hooks.append(layer.register_full_backward_hook(
-            lambda m, gi, go: setattr(self, "gradients", go[0].detach())
-        ))
-
-    def remove_hooks(self):
-        for h in self._hooks:
-            h.remove()
-        self._hooks.clear()
+    def __init__(self, model: keras.Model, layer_name: str, preprocess: Callable):
+        self.preprocess = preprocess
+        self.grad_model = keras.Model(
+            model.inputs, [model.get_layer(layer_name).output, model.output],
+        )
 
     def generate(
         self,
-        image_tensor: torch.Tensor,
+        image: np.ndarray,
         target_class: Optional[int] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
         """
-        Returns (heatmap, overlay) for the given image tensor (1, C, H, W).
+        image: (H, W, 3) uint8 RGB as returned by dataset.load_image.
+        Returns (heatmap in [0, 1], overlay RGB uint8, P(pneumonia)).
         """
-        self.model.eval()
-        device = next(self.model.parameters()).device
-        image_tensor = image_tensor.to(device)
+        x = self.preprocess(tf.convert_to_tensor(image[None], tf.float32))
 
-        # Forward
-        output = self.model(image_tensor)
-        probs  = torch.softmax(output, dim=1)
-        if target_class is None:
-            target_class = probs.argmax(dim=1).item()
+        with tf.GradientTape() as tape:
+            conv_out, prob = self.grad_model(x, training=False)
+            p = tf.cast(prob[:, 0], tf.float32)
+            if target_class is None:
+                target_class = int(p[0] >= 0.5)
+            score = p if target_class == 1 else 1.0 - p
 
-        # Backward
-        self.model.zero_grad()
-        probs[0, target_class].backward()
-
-        # Grad-CAM
-        weights = self.gradients.mean(dim=[2, 3], keepdim=True)
-        cam     = F.relu((weights * self.activations).sum(dim=1, keepdim=True))
-        cam     = cam.squeeze().cpu().numpy()
-
+        # Differentiate w.r.t. the model's own tensor, then cast: under mixed
+        # precision the feature map is float16.
+        grads    = tf.cast(tape.gradient(score, conv_out), tf.float32)   # (1, h, w, C)
+        conv_out = tf.cast(conv_out, tf.float32)
+        weights  = tf.reduce_mean(grads, axis=(1, 2))                    # (1, C)
+        cam     = tf.nn.relu(tf.reduce_sum(conv_out * weights[:, None, None, :], axis=-1))[0]
+        cam     = cam.numpy()
         if cam.max() > 0:
             cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
 
-        h, w    = image_tensor.shape[2], image_tensor.shape[3]
-        heatmap = cv2.resize(cam, (w, h))
-        overlay = self._overlay(image_tensor, heatmap)
-        return heatmap, overlay
+        heatmap = cv2.resize(cam, (image.shape[1], image.shape[0]))
+        return heatmap, overlay(image, heatmap), float(p[0])
 
-    def _overlay(self, tensor: torch.Tensor, heatmap: np.ndarray, alpha: float = 0.45) -> np.ndarray:
-        mean = np.array([0.485, 0.456, 0.406])
-        std  = np.array([0.229, 0.224, 0.225])
-        img  = tensor.squeeze().cpu().numpy().transpose(1, 2, 0)
-        img  = (img * std + mean).clip(0, 1)
-        img  = (img * 255).astype(np.uint8)
-        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-        heat_color = cv2.applyColorMap((heatmap * 255).astype(np.uint8), cv2.COLORMAP_JET)
-        return cv2.addWeighted(img_bgr, 1 - alpha, heat_color, alpha, 0)
+def overlay(image: np.ndarray, heatmap: np.ndarray, alpha: float = 0.45) -> np.ndarray:
+    """Blend a jet-coloured heatmap over an RGB image."""
+    heat = cv2.applyColorMap((heatmap * 255).astype(np.uint8), cv2.COLORMAP_JET)
+    heat = cv2.cvtColor(heat, cv2.COLOR_BGR2RGB)
+    return cv2.addWeighted(image, 1 - alpha, heat, alpha, 0)
 
-    @staticmethod
-    def save_comparison(
-        image_tensor: torch.Tensor,
-        heatmap: np.ndarray,
-        overlay: np.ndarray,
-        prediction: str,
-        confidence: float,
-        output_path: str,
-    ):
-        """Save original | heatmap | overlay side-by-side."""
-        mean = np.array([0.485, 0.456, 0.406])
-        std  = np.array([0.229, 0.224, 0.225])
-        img  = image_tensor.squeeze().numpy().transpose(1, 2, 0)
-        img  = (img * std + mean).clip(0, 1)
 
-        fig, axes = plt.subplots(1, 3, figsize=(14, 5))
-        fig.suptitle(
-            f"Grad-CAM  —  Prediction: {prediction}  |  Confidence: {confidence:.1%}",
-            fontsize=13, fontweight="bold",
-        )
+def save_comparison(
+    image: np.ndarray,
+    heatmap: np.ndarray,
+    overlay_img: np.ndarray,
+    prediction: str,
+    confidence: float,
+    output_path: str,
+    title_prefix: str = "",
+):
+    """Save original | heatmap | overlay side-by-side."""
+    fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+    fig.suptitle(
+        f"{title_prefix}Grad-CAM  |  Prediction: {prediction}  |  Confidence: {confidence:.1%}",
+        fontsize=13, fontweight="bold",
+    )
+    axes[0].imshow(image)
+    axes[0].set_title("Original X-Ray", fontweight="bold")
+    im = axes[1].imshow(heatmap, cmap="jet", vmin=0, vmax=1)
+    axes[1].set_title("Activation Heatmap", fontweight="bold")
+    plt.colorbar(im, ax=axes[1], fraction=0.046)
+    axes[2].imshow(overlay_img)
+    axes[2].set_title("Grad-CAM Overlay", fontweight="bold")
+    for ax in axes:
+        ax.axis("off")
 
-        axes[0].imshow(img, cmap="gray" if img.std() < 0.08 else None)
-        axes[0].set_title("Original X-Ray", fontweight="bold")
-        axes[0].axis("off")
+    plt.tight_layout()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved Grad-CAM: {output_path}")
 
-        im = axes[1].imshow(heatmap, cmap="jet", vmin=0, vmax=1)
-        axes[1].set_title("Activation Heatmap", fontweight="bold")
-        axes[1].axis("off")
-        plt.colorbar(im, ax=axes[1], fraction=0.046)
 
-        axes[2].imshow(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
-        axes[2].set_title("Grad-CAM Overlay", fontweight="bold")
-        axes[2].axis("off")
+def save_gradcam_examples(
+    model: keras.Model,
+    layer_name: str,
+    preprocess: Callable,
+    paths: List[str],
+    labels,
+    probs,
+    output_dir: str,
+    image_size: int = 224,
+    threshold: float = 0.5,
+    n: int = 4,
+):
+    """
+    Grad-CAM on real test images:
+      gradcam_example.png   one confidently detected pneumonia case (3 panels)
+      gradcam_examples.png  n cases: correct pneumonia, correct normal, and a mistake if any
+    """
+    labels, probs = np.asarray(labels), np.asarray(probs)
+    preds = (probs >= threshold).astype(int)
+    cam = GradCAM(model, layer_name, preprocess)
 
-        plt.tight_layout()
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=150, bbox_inches="tight")
-        plt.close()
-        print(f"  Saved Grad-CAM: {output_path}")
+    tp = np.flatnonzero((labels == 1) & (preds == 1))
+    tn = np.flatnonzero((labels == 0) & (preds == 0))
+    wrong = np.flatnonzero(labels != preds)
+
+    # Most confident true positive for the single headline example
+    if len(tp):
+        i = tp[np.argmax(probs[tp])]
+        img = load_image(paths[i], image_size)
+        heat, over, p = cam.generate(img, target_class=1)
+        save_comparison(img, heat, over, "Pneumonia", p,
+                        str(Path(output_dir) / "gradcam_example.png"))
+
+    rng = np.random.default_rng(7)
+    picks  = list(rng.choice(tp, min(2, len(tp)), replace=False)) if len(tp) else []
+    picks += list(rng.choice(tn, min(1, len(tn)), replace=False)) if len(tn) else []
+    picks += list(rng.choice(wrong, min(1, len(wrong)), replace=False)) if len(wrong) else []
+    picks = picks[:n]
+    if not picks:
+        return
+
+    fig, axes = plt.subplots(len(picks), 2, figsize=(8, 4 * len(picks)))
+    axes = np.atleast_2d(axes)
+    for row, i in zip(axes, picks):
+        img = load_image(paths[i], image_size)
+        heat, over, p = cam.generate(img, target_class=int(preds[i]))
+        conf = p if preds[i] == 1 else 1 - p
+        ok = preds[i] == labels[i]
+        row[0].imshow(img)
+        row[0].set_title(f"True: {CLASSES[labels[i]]}", fontweight="bold")
+        row[1].imshow(over)
+        row[1].set_title(f"Pred: {CLASSES[preds[i]]} ({conf:.1%})",
+                         color="#2E7D32" if ok else "#C62828", fontweight="bold")
+        for ax in row:
+            ax.axis("off")
+    fig.suptitle("Grad-CAM on test images", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    out = Path(output_dir) / "gradcam_examples.png"
+    plt.savefig(out, dpi=120, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {out}")

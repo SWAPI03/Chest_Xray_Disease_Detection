@@ -4,29 +4,26 @@ predict.py
 Single-image inference with optional Grad-CAM visualization.
 
 Usage:
-    python main.py --mode predict --image path/to/xray.jpg --checkpoint outputs/models/best_model.pth
+    python main.py --mode predict --image path/to/xray.jpg --checkpoint outputs/models/best_model.keras
 """
 
-import cv2
-import numpy as np
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
-import torch
-import torch.nn as nn
+import tensorflow as tf
+import keras
 
-from src.dataset import get_val_transforms, CLASSES
-from src.gradcam import GradCAM
+from src.dataset import CLASSES, load_image
+from src.gradcam import GradCAM, save_comparison
 
 
 def predict(
-    model: nn.Module,
+    model: keras.Model,
     image_path: str,
-    device: torch.device,
+    preprocess: Callable,
     image_size: int = 224,
     threshold: float = 0.5,
-    save_gradcam: bool = True,
-    model_name: str = "densenet121",
+    gradcam_layer: Optional[str] = None,
     output_dir: Optional[str] = None,
 ) -> Dict:
     """
@@ -34,36 +31,27 @@ def predict(
 
     Returns:
         {
-          'prediction':   'Normal' | 'Pneumonia',
-          'confidence':   0.98,
-          'prob_normal':  0.02,
+          'prediction':     'Normal' | 'Pneumonia',
+          'confidence':     0.98,
+          'prob_normal':    0.02,
           'prob_pneumonia': 0.98,
         }
     """
-    # ── Load & preprocess ─────────────────────────────────────────────────────
-    image = cv2.imread(image_path)
-    if image is None:
+    if not Path(image_path).exists():
         raise FileNotFoundError(f"Cannot read image: {image_path}")
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    transform = get_val_transforms(image_size)
-    tensor    = transform(image=image)["image"].unsqueeze(0).to(device)
-
-    # ── Forward pass ──────────────────────────────────────────────────────────
-    model.eval()
-    with torch.no_grad():
-        logits = model(tensor)
-    probs   = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
-    pred_idx = int(np.argmax(probs))
+    image = load_image(image_path, image_size)
+    x = preprocess(tf.convert_to_tensor(image[None], tf.float32))
+    p = float(model.predict(x, verbose=0)[0, 0])
+    pred_idx = int(p >= threshold)
 
     result = {
         "prediction":     CLASSES[pred_idx],
-        "confidence":     float(probs[pred_idx]),
-        "prob_normal":    float(probs[0]),
-        "prob_pneumonia": float(probs[1]),
+        "confidence":     p if pred_idx == 1 else 1 - p,
+        "prob_normal":    1 - p,
+        "prob_pneumonia": p,
     }
 
-    # ── Print result ──────────────────────────────────────────────────────────
     print(f"\n{'─'*40}")
     print(f"  Image      : {Path(image_path).name}")
     print(f"  Prediction : {result['prediction']}")
@@ -72,25 +60,14 @@ def predict(
     print(f"  Pneumonia  : {result['prob_pneumonia']:.1%}")
     print(f"{'─'*40}\n")
 
-    # ── Grad-CAM ──────────────────────────────────────────────────────────────
-    if save_gradcam and output_dir:
-        try:
-            cam = GradCAM(model, model_name=model_name)
-            with torch.enable_grad():
-                heatmap, overlay = cam.generate(tensor.clone(), target_class=pred_idx)
-
-            stem    = Path(image_path).stem
-            viz_dir = Path(output_dir)
-            viz_dir.mkdir(parents=True, exist_ok=True)
-
-            GradCAM.save_comparison(
-                tensor.cpu(), heatmap, overlay,
-                prediction=result["prediction"],
-                confidence=result["confidence"],
-                output_path=str(viz_dir / f"{stem}_gradcam.png"),
-            )
-            cam.remove_hooks()
-        except Exception as e:
-            print(f"  Grad-CAM warning: {e}")
+    if gradcam_layer and output_dir:
+        cam = GradCAM(model, gradcam_layer, preprocess)
+        heatmap, over, _ = cam.generate(image, target_class=pred_idx)
+        save_comparison(
+            image, heatmap, over,
+            prediction=result["prediction"],
+            confidence=result["confidence"],
+            output_path=str(Path(output_dir) / f"{Path(image_path).stem}_gradcam.png"),
+        )
 
     return result
