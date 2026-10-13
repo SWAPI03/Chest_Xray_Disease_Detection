@@ -1,125 +1,100 @@
 """
 models.py
 ---------
-CNN models for chest X-ray pneumonia detection.
+Keras models for chest X-ray pneumonia detection.
 
 Supported backbones:
-  - DenseNet121  (primary — mirrors CheXNet, Rajpurkar et al. 2017)
-  - ResNet50     (alternative — faster, larger parameter count)
+  - DenseNet121  (primary, mirrors CheXNet, Rajpurkar et al. 2017)
+  - ResNet50     (alternative baseline)
 
 Both use ImageNet pretrained weights and a small custom classification head.
+Each backbone expects its own input preprocessing, see get_preprocess().
 """
 
-import torch
-import torch.nn as nn
-from torchvision import models
+from typing import Callable
+
+import numpy as np
+import tensorflow as tf
+import keras
+from keras import layers
 
 
-# ─── DenseNet121 ─────────────────────────────────────────────────────────────
-
-class DenseNet121(nn.Module):
-    """
-    DenseNet121 backbone + lightweight classification head.
-
-    Architecture mirrors CheXNet (Rajpurkar et al. 2017):
-        DenseNet121 features → ReLU → GlobalAvgPool → Dropout → FC(1024→2)
-    """
-
-    def __init__(self, num_classes: int = 2, pretrained: bool = True, dropout: float = 0.5):
-        super().__init__()
-        weights = models.DenseNet121_Weights.IMAGENET1K_V1 if pretrained else None
-        base = models.densenet121(weights=weights)
-
-        self.features   = base.features          # output: (B, 1024, H, W)
-        self.relu       = nn.ReLU(inplace=True)
-        self.pool       = nn.AdaptiveAvgPool2d((1, 1))
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=dropout),
-            nn.Linear(1024, num_classes),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.features(x)
-        x = self.relu(x)
-        x = self.pool(x)
-        x = torch.flatten(x, 1)
-        return self.classifier(x)
+IMAGENET_MEAN = tf.constant([0.485, 0.456, 0.406])
+IMAGENET_STD  = tf.constant([0.229, 0.224, 0.225])
+CAFFE_MEAN_BGR = tf.constant([103.939, 116.779, 123.68])
 
 
-# ─── ResNet50 ────────────────────────────────────────────────────────────────
+# ─── Preprocessing ────────────────────────────────────────────────────────────
 
-class ResNet50(nn.Module):
-    """
-    ResNet50 backbone + classification head.
-    Slightly higher param count than DenseNet121, good accuracy baseline.
-    """
-
-    def __init__(self, num_classes: int = 2, pretrained: bool = True, dropout: float = 0.5):
-        super().__init__()
-        weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
-        base = models.resnet50(weights=weights)
-
-        # Keep everything except the original FC
-        self.backbone   = nn.Sequential(*list(base.children())[:-1])  # → (B, 2048, 1, 1)
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=dropout),
-            nn.Linear(2048, num_classes),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.backbone(x)
-        x = torch.flatten(x, 1)
-        return self.classifier(x)
+def _torch_style(x: tf.Tensor) -> tf.Tensor:
+    """Scale to [0, 1] and normalise with ImageNet mean/std (DenseNet weights)."""
+    return (x / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
 
 
-# ─── Factory ─────────────────────────────────────────────────────────────────
+def _caffe_style(x: tf.Tensor) -> tf.Tensor:
+    """RGB -> BGR and subtract the ImageNet channel means (ResNet50 weights)."""
+    return tf.reverse(x, axis=[-1]) - CAFFE_MEAN_BGR
+
+
+# name -> (constructor, preprocessing, Grad-CAM target layer)
+BACKBONES = {
+    "densenet121": (keras.applications.DenseNet121, _torch_style, "relu"),
+    "resnet50":    (keras.applications.ResNet50,    _caffe_style, "conv5_block3_out"),
+}
+
+
+def _lookup(name: str):
+    name = name.lower()
+    if name not in BACKBONES:
+        raise ValueError(f"Unknown model '{name}'. Choose one of {list(BACKBONES)}.")
+    return BACKBONES[name]
+
+
+def get_preprocess(name: str) -> Callable[[tf.Tensor], tf.Tensor]:
+    """Preprocessing that matches the backbone's ImageNet weights (input: 0-255 RGB)."""
+    return _lookup(name)[1]
+
+
+def gradcam_layer(name: str) -> str:
+    """Name of the last convolutional feature map, used for Grad-CAM."""
+    return _lookup(name)[2]
+
+
+# ─── Model ────────────────────────────────────────────────────────────────────
 
 def build_model(
     name: str = "densenet121",
-    num_classes: int = 2,
+    image_size: int = 224,
     pretrained: bool = True,
     dropout: float = 0.5,
-) -> nn.Module:
+) -> keras.Model:
     """
-    Build a model by name.
+    Backbone features → GlobalAvgPool → Dropout → Dense(1, sigmoid).
 
-    Args:
-        name:        'densenet121' or 'resnet50'
-        num_classes: Output neurons (2 for binary classification)
-        pretrained:  Load ImageNet weights
-        dropout:     Dropout before the final FC layer
-
-    Returns:
-        Configured nn.Module
+    Keras' DenseNet121 already ends with BN + ReLU, matching CheXNet's
+    features → ReLU → pool → FC head. The output is P(pneumonia).
+    The backbone layers sit directly in the model graph (not nested), so
+    Grad-CAM can read the last conv feature map by layer name.
     """
-    name = name.lower()
+    constructor = _lookup(name)[0]
+    base = constructor(
+        include_top=False,
+        weights="imagenet" if pretrained else None,
+        input_shape=(image_size, image_size, 3),
+    )
+    x = layers.GlobalAveragePooling2D(name="avg_pool_head")(base.output)
+    x = layers.Dropout(dropout, name="head_dropout")(x)
+    # float32 output keeps the sigmoid stable under mixed precision
+    outputs = layers.Dense(1, activation="sigmoid", dtype="float32", name="pneumonia_prob")(x)
+    model = keras.Model(base.input, outputs, name=name.lower())
 
-    if name == "densenet121":
-        model = DenseNet121(num_classes, pretrained, dropout)
-    elif name == "resnet50":
-        model = ResNet50(num_classes, pretrained, dropout)
-    else:
-        raise ValueError(f"Unknown model '{name}'. Choose 'densenet121' or 'resnet50'.")
-
-    total     = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total     = model.count_params()
+    trainable = sum(int(np.prod(w.shape)) for w in model.trainable_weights)
     print(f"  Model : {name.upper()}  |  Params: {total/1e6:.1f}M  |  Trainable: {trainable/1e6:.1f}M")
     return model
 
 
-# ─── Checkpoint helpers ───────────────────────────────────────────────────────
-
-def save_checkpoint(model: nn.Module, optimizer, epoch: int, metrics: dict, path: str):
-    torch.save({
-        "epoch":                epoch,
-        "model_state_dict":     model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "metrics":              metrics,
-    }, path)
-
-
-def load_checkpoint(model: nn.Module, path: str, device: torch.device) -> dict:
-    ckpt = torch.load(path, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
-    print(f"  Loaded checkpoint: {path}  (epoch {ckpt.get('epoch', '?')})")
-    return ckpt
+def load_model(path: str) -> keras.Model:
+    model = keras.models.load_model(path)
+    print(f"  Loaded model: {path}")
+    return model
