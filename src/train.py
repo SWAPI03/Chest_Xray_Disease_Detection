@@ -1,210 +1,163 @@
 """
 train.py
 --------
-Training loop for chest X-ray pneumonia detection.
+Training for chest X-ray pneumonia detection with Keras model.fit.
 
 Features:
-  - Mixed-precision training (AMP) for faster GPU training
-  - Cosine / Step / Plateau LR scheduling
-  - Early stopping on validation AUC
-  - TensorBoard logging
-  - Best-model checkpoint saving
+  - Mixed-precision training on GPU (float16 compute, float32 output)
+  - AdamW with cosine / step / plateau learning-rate schedules
+  - Class weights for the 3:1 Pneumonia:Normal imbalance
+  - Early stopping and best-model checkpointing on validation AUC
+  - CSV + TensorBoard logging and a training-curves plot
 """
 
-import time
+import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Tuple
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import keras
 
-from src.evaluate import compute_metrics
+from src.dataset import class_weights
 
 logger = logging.getLogger(__name__)
 
 
-# ─── Scheduler factory ────────────────────────────────────────────────────────
+# ─── Learning-rate schedule ───────────────────────────────────────────────────
 
-def _get_scheduler(optimizer, config: dict):
-    name = config["training"]["scheduler"]
+def _learning_rate(config: dict, steps_per_epoch: int):
+    """Returns (learning_rate, extra_callbacks) for the configured scheduler."""
+    cfg_t = config["training"]
+    lr, epochs, name = cfg_t["learning_rate"], cfg_t["epochs"], cfg_t["scheduler"]
+
     if name == "cosine":
-        return optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=config["training"]["epochs"], eta_min=1e-6
-        )
+        return keras.optimizers.schedules.CosineDecay(
+            initial_learning_rate=lr,
+            decay_steps=epochs * steps_per_epoch,
+            alpha=1e-6 / lr,
+        ), []
     if name == "step":
-        return optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+        return keras.optimizers.schedules.PiecewiseConstantDecay(
+            boundaries=[10 * steps_per_epoch, 20 * steps_per_epoch],
+            values=[lr, lr * 0.1, lr * 0.01],
+        ), []
     if name == "plateau":
-        return optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="max", patience=3, factor=0.5
-        )
+        return lr, [keras.callbacks.ReduceLROnPlateau(
+            monitor="val_auc", mode="max", patience=3, factor=0.5, min_lr=1e-6, verbose=1,
+        )]
     raise ValueError(f"Unknown scheduler: {name}")
 
 
-# ─── Early stopping ───────────────────────────────────────────────────────────
-
-class EarlyStopping:
-    def __init__(self, patience: int = 5):
-        self.patience = patience
-        self.counter  = 0
-        self.best     = None
-
-    def step(self, score: float) -> bool:
-        if self.best is None or score > self.best + 1e-4:
-            self.best    = score
-            self.counter = 0
-            return False
-        self.counter += 1
-        logger.info(f"  EarlyStopping: {self.counter}/{self.patience}")
-        return self.counter >= self.patience
-
-
-# ─── One epoch ────────────────────────────────────────────────────────────────
-
-def _run_epoch(
-    model, loader: DataLoader, criterion, optimizer,
-    device, scaler, phase: str,
-) -> Dict[str, float]:
-    is_train = phase == "train"
-    model.train() if is_train else model.eval()
-
-    total_loss = 0.0
-    all_labels, all_preds, all_probs = [], [], []
-
-    with torch.set_grad_enabled(is_train):
-        for batch in tqdm(loader, desc=f"  {phase.capitalize():5s}", leave=False):
-            images = batch["image"].to(device, non_blocking=True)
-            labels = batch["label"].to(device, non_blocking=True)
-
-            with autocast(enabled=(scaler is not None)):
-                logits = model(images)
-                loss   = criterion(logits, labels)
-
-            if is_train:
-                optimizer.zero_grad()
-                if scaler:
-                    scaler.scale(loss).backward()
-                    scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                    optimizer.step()
-
-            total_loss += loss.item() * images.size(0)
-
-            probs = torch.softmax(logits, dim=1)[:, 1]
-            preds = logits.argmax(dim=1)
-            all_probs.extend(probs.detach().cpu().numpy())
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-
-    metrics = compute_metrics(all_labels, all_preds, all_probs)
-    metrics["loss"] = total_loss / len(loader.dataset)
-    return metrics
+def compile_model(model: keras.Model, config: dict, steps_per_epoch: int) -> list:
+    cfg_t = config["training"]
+    learning_rate, lr_callbacks = _learning_rate(config, steps_per_epoch)
+    model.compile(
+        optimizer=keras.optimizers.AdamW(
+            learning_rate=learning_rate,
+            weight_decay=cfg_t["weight_decay"],
+            clipnorm=1.0,
+        ),
+        loss=keras.losses.BinaryCrossentropy(),
+        metrics=[
+            keras.metrics.AUC(name="auc"),
+            keras.metrics.BinaryAccuracy(name="accuracy"),
+            keras.metrics.Precision(name="precision"),
+            keras.metrics.Recall(name="recall"),
+        ],
+    )
+    return lr_callbacks
 
 
 # ─── Main training function ───────────────────────────────────────────────────
 
-def train(
-    model: nn.Module,
-    dataloaders: Dict[str, DataLoader],
-    config: dict,
-    device: torch.device,
-) -> nn.Module:
+def train(model: keras.Model, data: Dict[str, dict], config: dict) -> Tuple[keras.Model, dict]:
     """
-    Train the model and return the best checkpoint.
+    Train the model and return (best model, history).
 
-    Saves best_model.pth to outputs/models/ whenever validation AUC improves.
-    Logs to TensorBoard in outputs/logs/.
+    Saves the best model (highest validation AUC) to outputs/models/best_model.keras,
+    logs to outputs/logs/, and plots outputs/visualizations/training_curves.png.
     """
     cfg_t = config["training"]
-    epochs     = cfg_t["epochs"]
-    lr         = cfg_t["learning_rate"]
-    wd         = cfg_t["weight_decay"]
-    use_amp    = cfg_t.get("mixed_precision", True)
-    patience   = cfg_t["patience"]
+    out   = config["output"]
+    model_dir, log_dir, viz_dir = (Path(out[k]) for k in ("model_dir", "log_dir", "viz_dir"))
+    for d in (model_dir, log_dir, viz_dir):
+        d.mkdir(parents=True, exist_ok=True)
 
-    model_dir = Path(config["output"]["model_dir"])
-    log_dir   = Path(config["output"]["log_dir"])
-    model_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    train_ds, val_ds = data["train"]["ds"], data["val"]["ds"]
+    steps_per_epoch = int(train_ds.cardinality())
+    lr_callbacks = compile_model(model, config, steps_per_epoch)
 
-    # Loss — class-weighted to handle 3:1 imbalance
-    if cfg_t.get("use_class_weights", True):
-        cw = dataloaders["train"].dataset.get_class_weights().to(device)
-        criterion = nn.CrossEntropyLoss(weight=cw)
-    else:
-        criterion = nn.CrossEntropyLoss()
+    cw = class_weights(data["train"]["labels"]) if cfg_t.get("use_class_weights", True) else None
+    best_path = model_dir / out["best_model_name"]
 
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
-    scheduler = _get_scheduler(optimizer, config)
-    scaler    = GradScaler() if use_amp and device.type == "cuda" else None
-    writer    = SummaryWriter(log_dir=str(log_dir))
-    stopper   = EarlyStopping(patience=patience)
-
-    best_auc  = 0.0
-    best_path = model_dir / config["output"]["best_model_name"]
+    callbacks = [
+        keras.callbacks.ModelCheckpoint(
+            str(best_path), monitor="val_auc", mode="max", save_best_only=True, verbose=1,
+        ),
+        keras.callbacks.EarlyStopping(
+            monitor="val_auc", mode="max", patience=cfg_t["patience"], min_delta=1e-4, verbose=1,
+        ),
+        keras.callbacks.CSVLogger(str(log_dir / "history.csv")),
+        keras.callbacks.TensorBoard(log_dir=str(log_dir / "tensorboard")),
+        *lr_callbacks,
+    ]
 
     print(f"\n{'='*55}")
     print(f"  Model   : {config['model']['name'].upper()}")
-    print(f"  Epochs  : {epochs}  |  LR: {lr}  |  Device: {device}")
-    print(f"  AMP     : {scaler is not None}")
+    print(f"  Epochs  : {cfg_t['epochs']}  |  LR: {cfg_t['learning_rate']}  |  Steps/epoch: {steps_per_epoch}")
+    print(f"  Policy  : {keras.config.dtype_policy().name}")
+    print(f"  Class weights: {cw}")
     print(f"{'='*55}\n")
 
-    for epoch in range(1, epochs + 1):
-        t0 = time.time()
-        print(f"Epoch [{epoch}/{epochs}]")
+    history = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=cfg_t["epochs"],
+        class_weight=cw,
+        callbacks=callbacks,
+        verbose=2,
+    ).history
 
-        train_m = _run_epoch(model, dataloaders["train"], criterion, optimizer, device, scaler, "train")
-        val_m   = _run_epoch(model, dataloaders["val"],   criterion, None,      device, None,   "val")
+    best_epoch = int(np.argmax(history["val_auc"])) + 1
+    summary = {
+        "epochs_trained": len(history["loss"]),
+        "best_epoch": best_epoch,
+        "best_val_auc": float(max(history["val_auc"])),
+        "class_weights": cw,
+        "history": {k: [float(v) for v in vals] for k, vals in history.items()},
+    }
+    with open(log_dir / "history.json", "w") as f:
+        json.dump(summary, f, indent=2)
 
-        # LR step
-        if config["training"]["scheduler"] == "plateau":
-            scheduler.step(val_m["auc"])
-        else:
-            scheduler.step()
+    plot_training_curves(history, best_epoch, viz_dir / "training_curves.png")
+    print(f"\nTraining done.  Best Val AUC: {summary['best_val_auc']:.4f} (epoch {best_epoch})  →  {best_path}")
 
-        # Log
-        for k, v in train_m.items():
-            writer.add_scalar(f"Train/{k}", v, epoch)
-        for k, v in val_m.items():
-            writer.add_scalar(f"Val/{k}", v, epoch)
-        writer.add_scalar("LR", optimizer.param_groups[0]["lr"], epoch)
+    best = keras.models.load_model(best_path)
+    return best, summary
 
-        print(
-            f"  Train  Loss: {train_m['loss']:.4f}  AUC: {train_m['auc']:.4f}  Acc: {train_m['accuracy']:.4f}\n"
-            f"  Val    Loss: {val_m['loss']:.4f}  AUC: {val_m['auc']:.4f}  Acc: {val_m['accuracy']:.4f}"
-            f"  ({time.time()-t0:.0f}s)"
-        )
 
-        # Save best
-        if val_m["auc"] > best_auc:
-            best_auc = val_m["auc"]
-            torch.save({
-                "epoch":                epoch,
-                "model_state_dict":     model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "metrics":              val_m,
-                "config":               config,
-            }, best_path)
-            print(f"  ✓ Best model saved  (Val AUC: {best_auc:.4f})")
+# ─── Training curves ──────────────────────────────────────────────────────────
 
-        if stopper.step(val_m["auc"]):
-            print(f"\n  Early stopping at epoch {epoch}.")
-            break
+def plot_training_curves(history: dict, best_epoch: int, out_path: Path):
+    epochs = np.arange(1, len(history["loss"]) + 1)
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+    fig.suptitle("Training history: DenseNet121 (Keras)", fontsize=13, fontweight="bold")
 
-    writer.close()
-    print(f"\nTraining done.  Best Val AUC: {best_auc:.4f}  →  {best_path}")
+    for ax, key, title in zip(axes, ["loss", "auc", "accuracy"], ["Loss", "AUC-ROC", "Accuracy"]):
+        ax.plot(epochs, history[key], "o-", lw=2, ms=4, label="Train")
+        ax.plot(epochs, history[f"val_{key}"], "s-", lw=2, ms=4, label="Validation")
+        ax.axvline(best_epoch, color="#F44336", ls="--", lw=1.2, label=f"Best epoch ({best_epoch})")
+        ax.set_title(title, fontweight="bold")
+        ax.set_xlabel("Epoch")
+        ax.grid(alpha=0.25)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.legend(fontsize=9)
 
-    # Return best model
-    ckpt = torch.load(best_path, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
-    return model
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {out_path}")
