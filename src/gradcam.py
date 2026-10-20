@@ -23,11 +23,26 @@ from src.dataset import CLASSES, load_image
 
 
 class GradCAM:
-    def __init__(self, model: keras.Model, layer_name: str, preprocess: Callable):
+    def __init__(
+        self,
+        model: keras.Model,
+        layer_name: str,
+        preprocess: Callable,
+        head_layer: str = "pneumonia_prob",
+    ):
         self.preprocess = preprocess
+        # Grad-CAM uses the pre-sigmoid logit: once the sigmoid saturates
+        # (confident predictions), the gradient of the probability is ~0 and
+        # the heatmap would come out blank.
+        self.head = model.get_layer(head_layer)
         self.grad_model = keras.Model(
-            model.inputs, [model.get_layer(layer_name).output, model.output],
+            model.inputs, [model.get_layer(layer_name).output, self.head.input],
         )
+
+    def _logit(self, features: tf.Tensor) -> tf.Tensor:
+        kernel = tf.cast(self.head.kernel, tf.float32)
+        bias   = tf.cast(self.head.bias, tf.float32)
+        return tf.matmul(tf.cast(features, tf.float32), kernel)[:, 0] + bias[0]
 
     def generate(
         self,
@@ -41,11 +56,12 @@ class GradCAM:
         x = self.preprocess(tf.convert_to_tensor(image[None], tf.float32))
 
         with tf.GradientTape() as tape:
-            conv_out, prob = self.grad_model(x, training=False)
-            p = tf.cast(prob[:, 0], tf.float32)
+            conv_out, features = self.grad_model(x, training=False)
+            logit = self._logit(features)
+            p = tf.sigmoid(logit)
             if target_class is None:
                 target_class = int(p[0] >= 0.5)
-            score = p if target_class == 1 else 1.0 - p
+            score = logit if target_class == 1 else -logit
 
         # Differentiate w.r.t. the model's own tensor, then cast: under mixed
         # precision the feature map is float16.
