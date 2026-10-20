@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Chest X-Ray Pneumonia Detection — DenseNet121 + Grad-CAM</title>
-<meta name="description" content="Deep learning pipeline that classifies chest X-rays as Normal or Pneumonia using a DenseNet121 model, with Grad-CAM explainability. Educational project.">
+<title>Chest X-Ray Pneumonia Detection: DenseNet121 + Grad-CAM</title>
+<meta name="description" content="TensorFlow/Keras pipeline that classifies chest X-rays as Normal or Pneumonia using a DenseNet121 model, with Grad-CAM explainability. Educational project.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫁</text></svg>">
 <style>
   :root{
@@ -167,12 +167,12 @@
   <div class="wrap">
     <span class="eyebrow">🫁 Deep Learning · Medical Imaging</span>
     <h1>Chest X-Ray <span class="grad">Pneumonia Detection</span></h1>
-    <p class="lede">A DenseNet121 model that classifies chest X-rays as <b>Normal</b> or <b>Pneumonia</b> — with Grad-CAM heatmaps that show <i>where</i> the model is looking.</p>
+    <p class="lede">A DenseNet121 model that classifies chest X-rays as <b>Normal</b> or <b>Pneumonia</b>, built with TensorFlow/Keras, with Grad-CAM heatmaps that show <i>where</i> the model is looking.</p>
     <div class="badges">
-      <span class="badge">PyTorch 2.0+</span>
+      <span class="badge">TensorFlow / Keras</span>
       <span class="badge">DenseNet121 · CheXNet-style</span>
       <span class="badge">Grad-CAM Explainability</span>
-      <span class="badge">Python 3.9+</span>
+      <span class="badge">Python 3.10+</span>
     </div>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/SWAPI03/Chest_Xray_Disease_Detection" target="_blank" rel="noopener">★ View on GitHub</a>
@@ -184,10 +184,6 @@
         <span class="ic">⚕️</span>
         <div><strong>Not a medical device.</strong> This is an educational machine-learning project. It is not validated for clinical use and must never be used to diagnose, screen, or make decisions about a real person's health. Always consult a qualified radiologist or physician.</div>
       </div>
-      <div class="note warn">
-        <span class="ic">📊</span>
-        <div><strong>Illustrative results.</strong> The metrics and figures below are <em>representative sample outputs</em> generated to demonstrate the pipeline and visualizations — not the result of a fully trained run. Reproduce the real numbers by training on the dataset (see <a href="#run">Run it</a>).</div>
-      </div>
     </div>
   </div>
 </header>
@@ -198,25 +194,25 @@
   <section id="results">
     <div class="sec-tag">Performance</div>
     <h2>Results at a glance</h2>
-    <p class="sec-sub">Target performance for a DenseNet121 fine-tuned on the Kaggle Chest X-Ray dataset, evaluated on the 624-image test split.</p>
+    <p class="sec-sub">Measured on the untouched 624-image test split after training on a Colab T4 GPU (default 0.5 threshold).</p>
     <div class="metrics">
-      <div class="metric"><div class="val">95.5%</div><div class="lbl">Accuracy</div></div>
-      <div class="metric"><div class="val">0.971</div><div class="lbl">AUC-ROC</div></div>
-      <div class="metric"><div class="val">96.2%</div><div class="lbl">Recall</div></div>
-      <div class="metric"><div class="val">0.965</div><div class="lbl">F1 Score</div></div>
-      <div class="metric"><div class="val">95.9%</div><div class="lbl">Precision</div></div>
+      <div class="metric"><div class="val">0.943</div><div class="lbl">AUC-ROC</div></div>
+      <div class="metric"><div class="val">99.7%</div><div class="lbl">Recall</div></div>
+      <div class="metric"><div class="val">84.6%</div><div class="lbl">Accuracy</div></div>
+      <div class="metric"><div class="val">59.4%</div><div class="lbl">Specificity</div></div>
+      <div class="metric"><div class="val">0.890</div><div class="lbl">F1 Score</div></div>
     </div>
-    <span class="illus-tag">↑ Illustrative sample values — see the disclaimer above.</span>
+    <span class="illus-tag">The model catches 389 of 390 pneumonia cases but flags 95 of 234 normal X-rays. Details in the README.</span>
   </section>
 
   <!-- TRAINING -->
   <section id="training">
     <div class="sec-tag">Training</div>
     <h2>Training dynamics</h2>
-    <p class="sec-sub">Cosine learning-rate schedule with early stopping (patience = 5). Loss and validation AUC across epochs.</p>
+    <p class="sec-sub">Cosine learning-rate schedule with early stopping (patience = 5). Loss, AUC and accuracy across epochs.</p>
     <figure class="fig-card">
       <img src="assets/training_curves.png" alt="Training and validation loss and AUC curves over epochs" loading="lazy">
-      <figcaption>Training vs. validation loss (left) and validation AUC (right). The model converges around epoch 20 on GPU.</figcaption>
+      <figcaption>Early stopping kept epoch 14 of 16 (best validation AUC 0.9996).</figcaption>
     </figure>
   </section>
 
@@ -224,15 +220,15 @@
   <section id="eval">
     <div class="sec-tag">Evaluation</div>
     <h2>Confusion matrix &amp; ROC</h2>
-    <p class="sec-sub">In medical screening the costliest error is a <b>false negative</b> — missing a real pneumonia case. That's the number to drive down.</p>
+    <p class="sec-sub">In medical screening the costliest error is a <b>false negative</b>, a missed pneumonia case. There is only one here.</p>
     <div class="grid2">
       <figure class="fig-card">
         <img src="assets/confusion_matrix.png" alt="Confusion matrix for Normal vs Pneumonia" loading="lazy">
-        <figcaption>597 / 624 test images classified correctly, with false negatives held to a minimum.</figcaption>
+        <figcaption>528 / 624 test images correct: 1 missed pneumonia case, 95 false alarms on normal X-rays.</figcaption>
       </figure>
       <figure class="fig-card">
         <img src="assets/roc_curve.png" alt="ROC curve with AUC" loading="lazy">
-        <figcaption>An AUC of ~0.97 means strong separation of Normal vs. Pneumonia across all thresholds — not just the default 0.5 cutoff.</figcaption>
+        <figcaption>AUC 0.943. A higher threshold would trade a little recall for far fewer false alarms.</figcaption>
       </figure>
     </div>
   </section>
@@ -244,11 +240,14 @@
     <p class="sec-sub">A model can be right for the wrong reasons. Grad-CAM overlays a heatmap of the regions that drove the prediction, so you can sanity-check that it's attending to lung tissue rather than edges, text, or the spine.</p>
     <figure class="fig-card">
       <img src="assets/gradcam_example.png" alt="Grad-CAM heatmap overlaid on a chest X-ray" loading="lazy">
-      <figcaption>The activation concentrates on the region of consolidation in the lung field, consistent with how a radiologist would read the film.</figcaption>
+      <figcaption>Most heat sits over the lung fields, but some lands near the printed "R" marker, a hint the model partly uses labelling artifacts.</figcaption>
+    </figure>
+    <figure class="fig-card" style="margin-top:18px">
+      <img src="assets/gradcam_examples.png" alt="Grad-CAM on four test images" loading="lazy">
     </figure>
     <figure class="fig-card" style="margin-top:18px">
       <img src="assets/prediction_examples.png" alt="Grid of prediction examples with confidence scores" loading="lazy">
-      <figcaption>Prediction grid: high confidence on clean cases; the misses are borderline — subtle opacities easy to confuse with early consolidation.</figcaption>
+      <figcaption>Real test predictions: green titles are correct, red titles are mistakes.</figcaption>
     </figure>
   </section>
 
@@ -264,15 +263,12 @@
       <span class="step">Evaluate</span><span class="arr">→</span>
       <span class="step">Grad-CAM</span>
     </div>
-    <figure class="fig-card" style="margin-bottom:22px">
-      <img src="assets/architecture_diagram.png" alt="End-to-end pipeline diagram" loading="lazy">
-    </figure>
     <ul class="clean">
-      <li>Images resized to <b>224×224</b> and normalized with ImageNet statistics.</li>
-      <li><b>Augmentation:</b> horizontal flip, ±10° rotation, brightness/contrast jitter, Gaussian noise.</li>
-      <li><b>DenseNet121</b> pretrained on ImageNet, final layer replaced with a 2-class head.</li>
-      <li><b>WeightedRandomSampler</b> to handle the ~3:1 Pneumonia:Normal class imbalance.</li>
-      <li><b>AdamW</b> optimizer, cosine LR schedule, mixed precision on GPU.</li>
+      <li><b>tf.data</b> pipeline: decode, gray to RGB, resize to <b>224×224</b>, cache, ImageNet normalisation.</li>
+      <li><b>Augmentation:</b> horizontal flip, ±10° rotation, brightness/contrast jitter, Gaussian noise, all per image with tf ops.</li>
+      <li><b>keras.applications.DenseNet121</b> (ImageNet weights) → GlobalAveragePooling → Dropout → Dense(1, sigmoid).</li>
+      <li><b>class_weight</b> in model.fit for the ~3:1 Pneumonia:Normal imbalance.</li>
+      <li><b>AdamW</b>, cosine LR decay, mixed precision, checkpoint + early stopping on validation AUC.</li>
     </ul>
   </section>
 
@@ -292,8 +288,8 @@
       <table>
         <thead><tr><th>Split</th><th>Normal</th><th>Pneumonia</th><th>Total</th></tr></thead>
         <tbody>
-          <tr><td>Train</td><td class="num">1,208</td><td class="num">3,489</td><td class="num">4,697</td></tr>
-          <tr><td>Validation</td><td class="num">143</td><td class="num">396</td><td class="num">539</td></tr>
+          <tr><td>Train</td><td class="num">1,207</td><td class="num">3,488</td><td class="num">4,695</td></tr>
+          <tr><td>Validation</td><td class="num">142</td><td class="num">395</td><td class="num">537</td></tr>
           <tr><td>Test</td><td class="num">234</td><td class="num">390</td><td class="num">624</td></tr>
         </tbody>
       </table>
@@ -317,7 +313,7 @@ python data/prepare_data.py
 python main.py --mode train
 
 <span class="c"># 4 · Predict on a single X-ray (+ Grad-CAM)</span>
-python main.py --mode predict --checkpoint outputs/models/best_model.pth --image path/to/xray.jpg
+python main.py --mode predict --checkpoint outputs/models/best_model.keras --image path/to/xray.jpg
 
 <span class="c"># No data handy? Run the smoke test:</span>
 python main.py</pre>
@@ -338,8 +334,8 @@ python main.py</pre>
 
 <footer>
   <div class="wrap">
-    <p class="disc-foot">⚕️ <b>Educational project only.</b> Not a certified diagnostic tool and not intended for clinical use. Metrics and figures shown here are illustrative samples pending a full trained run.</p>
-    <p>Built with PyTorch · DenseNet121 · Grad-CAM &nbsp;·&nbsp; <a href="https://github.com/SWAPI03/Chest_Xray_Disease_Detection" target="_blank" rel="noopener">Source on GitHub ↗</a></p>
+    <p class="disc-foot">⚕️ <b>Educational project only.</b> Not a certified diagnostic tool and not intended for clinical use. Metrics and figures come from a real training run on the public Kaggle dataset.</p>
+    <p>Built with TensorFlow / Keras · DenseNet121 · Grad-CAM &nbsp;·&nbsp; <a href="https://github.com/SWAPI03/Chest_Xray_Disease_Detection" target="_blank" rel="noopener">Source on GitHub ↗</a></p>
   </div>
 </footer>
 

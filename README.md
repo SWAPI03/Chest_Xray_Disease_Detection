@@ -12,7 +12,60 @@ Classifying chest X-rays as **Normal or Pneumonia** with a DenseNet121 CNN fine-
 
 ## Results
 
-Results are being regenerated from a fresh training run of the TensorFlow version. Metrics and figures will show up here once it finishes.
+Trained on a free Colab T4 GPU ([executed notebook with all outputs](notebooks/train_colab.ipynb)). Early stopping kept epoch 14 of 16. Every number below is on the untouched 624-image test set at the default 0.5 threshold.
+
+| Metric | Value |
+|---|---|
+| AUC-ROC | **0.943** |
+| Recall (pneumonia caught) | **99.7%** (389 / 390) |
+| Accuracy | 84.6% |
+| Specificity (normal X-rays cleared) | 59.4% (139 / 234) |
+| Precision | 80.4% |
+| F1 score | 0.890 |
+
+Full breakdown in [`outputs/reports/evaluation_report.md`](outputs/reports/evaluation_report.md) and [`metrics.json`](outputs/reports/metrics.json).
+
+**Reading these numbers.** The model almost never misses pneumonia (1 false negative out of 390), but it is too quick to call pneumonia on healthy X-rays: 95 of the 234 normal images get flagged. Validation AUC was 0.9996 while test AUC is 0.943, because the validation split comes from the same pool as the training images and the Kaggle test set is known to be harder and differently distributed. The ROC curve shows a better trade-off exists at a higher threshold, but choosing it on the test set would leak, so the default 0.5 is reported. GPU training isn't fully deterministic either: an earlier run with the same config scored 79.0% accuracy and 0.953 AUC.
+
+---
+
+## Training
+
+![Training Curves](outputs/visualizations/training_curves.png)
+
+AdamW with cosine decay. Training AUC reaches 1.0 within a few epochs while validation stays around 0.995 to 0.9996, so the backbone fits this dataset very quickly. Early stopping watches validation AUC with patience 5.
+
+---
+
+## Confusion Matrix
+
+![Confusion Matrix](outputs/visualizations/confusion_matrix.png)
+
+For screening, false negatives (missed pneumonia) are the costly error, and there is only one. The price is 95 false alarms on normal X-rays.
+
+---
+
+## ROC Curve
+
+![ROC Curve](outputs/visualizations/roc_curve.png)
+
+---
+
+## Grad-CAM
+
+![Grad-CAM](outputs/visualizations/gradcam_example.png)
+
+![Grad-CAM examples](outputs/visualizations/gradcam_examples.png)
+
+On most pneumonia cases the heat sits over the lung fields. In some images it also lands on the corner where the "R" side marker is printed, which suggests the model partly uses scanner and labelling artifacts, a known weakness of this dataset. Spotting that kind of shortcut is exactly what Grad-CAM is for. The heatmaps are computed on the pre-sigmoid logit, so confident predictions still get a meaningful map.
+
+---
+
+## Prediction Examples
+
+![Prediction Examples](outputs/visualizations/prediction_examples.png)
+
+Real test images: green titles are correct predictions, red titles are mistakes.
 
 ---
 
@@ -36,7 +89,15 @@ Kaggle dataset  →  tf.data (decode, resize, augment)  →  DenseNet121  →  m
 
 [Kaggle: Chest X-Ray Images (Pneumonia)](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia), originally from Guangzhou Women and Children's Medical Center.
 
+| Split      | Normal | Pneumonia | Total |
+|------------|-------:|----------:|------:|
+| Train      | 1,207  | 3,488     | 4,695 |
+| Validation | 142    | 395       | 537   |
+| Test       | 234    | 390       | 624   |
+
 The Kaggle `val/` folder only has 16 images, so `data/prepare_data.py` moves 10% of `train/` into `val/` with a fixed seed. The 624-image `test/` folder is never touched during training.
+
+![Class balance](outputs/visualizations/class_distribution.png)
 
 ---
 
