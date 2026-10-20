@@ -167,7 +167,9 @@ def make_dataset(
     if training:
         ds = ds.shuffle(len(paths), seed=seed, reshuffle_each_iteration=True)
 
-    ds = ds.batch(batch_size)
+    # Dropping the last partial training batch keeps one input shape, so the
+    # XLA-compiled train step isn't compiled a second time.
+    ds = ds.batch(batch_size, drop_remainder=training)
     ds = ds.map(lambda x, t: (tf.cast(x, tf.float32), t), num_parallel_calls=AUTOTUNE)
 
     if training:
